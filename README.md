@@ -55,7 +55,3 @@ python forum_parser.py --forum-id 40 --pages 10
 
 Поля: `title`, `url`, `replies`, `views`, `last_post`.
 
-## Важно
-
-- В репозитории нет API-ключей, логинов, cookie-файлов и локальных персональных путей.
-- Не коммитьте `benzclub_cookies.pkl` и результаты выгрузки.
