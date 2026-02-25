@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import pickle
 import re
 import time
@@ -144,6 +145,66 @@ def save_json(path: Path, topics: Iterable[Topic]) -> None:
         json.dump([asdict(t) for t in topics], f, ensure_ascii=False, indent=2)
 
 
+def build_openai_client():
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv()
+    except Exception:
+        pass
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Set it in environment or .env file."
+        )
+
+    from openai import OpenAI  # type: ignore
+
+    return OpenAI(api_key=api_key)
+
+
+def is_relevant_gpt(client, title: str, model: str) -> bool:
+    prompt = (
+        "Определи, относится ли заголовок к технической проблеме Mercedes E-Class. "
+        "Отвечай строго одним словом: Да или Нет.\n"
+        "Техническая проблема: неисправность, ошибка, поломка, стук, вибрация, "
+        "ремонт, отказ узла/системы.\n"
+        "Не проблема: выбор авто, покупка, продажа, тюнинг, общие обсуждения.\n\n"
+        f'Заголовок: "{title}"'
+    )
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    answer = response.choices[0].message.content or ""
+    normalized = answer.strip().lower()
+    return normalized.startswith(("да", "yes"))
+
+
+def filter_topics_with_gpt(topics: List[Topic], model: str, delay: float) -> List[Topic]:
+    client = build_openai_client()
+    filtered: List[Topic] = []
+    total = len(topics)
+
+    for idx, topic in enumerate(topics, start=1):
+        try:
+            keep = is_relevant_gpt(client, topic.title, model=model)
+        except Exception as exc:
+            print(f"[GPT] Error on topic #{idx}: {exc}. Keeping topic.")
+            keep = True
+
+        if keep:
+            filtered.append(topic)
+
+        print(f"[GPT] {idx}/{total}: {'keep' if keep else 'skip'}")
+        if delay > 0:
+            time.sleep(delay)
+
+    return filtered
+
+
 def parse_forum(
     forum_id: int,
     pages: int,
@@ -186,6 +247,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-csv", type=Path, default=Path("topics.csv"))
     parser.add_argument("--output-json", type=Path, default=Path("topics.json"))
+    parser.add_argument(
+        "--use-gpt-filter",
+        action="store_true",
+        help="Enable GPT filtering for technical issues",
+    )
+    parser.add_argument(
+        "--gpt-model",
+        type=str,
+        default="gpt-4o-mini",
+        help="OpenAI model for filtering (default: gpt-4o-mini)",
+    )
+    parser.add_argument(
+        "--gpt-delay",
+        type=float,
+        default=0.0,
+        help="Delay between GPT calls in seconds (default: 0.0)",
+    )
+    parser.add_argument(
+        "--gpt-output-csv",
+        type=Path,
+        default=Path("topics_gpt_filtered.csv"),
+        help="Output CSV for GPT-filtered topics",
+    )
+    parser.add_argument(
+        "--gpt-output-json",
+        type=Path,
+        default=Path("topics_gpt_filtered.json"),
+        help="Output JSON for GPT-filtered topics",
+    )
     return parser
 
 
@@ -204,6 +294,17 @@ def main() -> None:
     print(f"Done. Parsed {len(topics)} topics.")
     print(f"CSV: {args.output_csv}")
     print(f"JSON: {args.output_json}")
+
+    if args.use_gpt_filter:
+        print(f"Running GPT filter with model: {args.gpt_model}")
+        filtered_topics = filter_topics_with_gpt(
+            topics=topics, model=args.gpt_model, delay=args.gpt_delay
+        )
+        save_csv(args.gpt_output_csv, filtered_topics)
+        save_json(args.gpt_output_json, filtered_topics)
+        print(f"GPT filtered topics: {len(filtered_topics)}")
+        print(f"GPT CSV: {args.gpt_output_csv}")
+        print(f"GPT JSON: {args.gpt_output_json}")
 
 
 if __name__ == "__main__":
